@@ -495,20 +495,34 @@ function App() {
         const formattedData = apiData.map(lot => {
           const existingLot = currentLots.find(l => l.id === parseInt(lot.id));
           
+          // emptyRatio 계산
+          const emptyRatio = lot.currentStatus?.emptyRatio?.toString() || existingLot?.emptyRatio || '0';
+          const emptyRatioNum = parseFloat(emptyRatio);
+          
+          // 여유율에 따른 상태 결정 (20% 이하는 혼잡)
+          let status;
+          if (emptyRatioNum <= 20) {
+            status = '혼잡';
+          } else if (emptyRatioNum <= 50) {
+            status = '보통';
+          } else {
+            status = '여유';
+          }
+          
           return {
             id: parseInt(lot.id),
             name: lot.name,
             // ⭐ 기존 위치 우선 사용 (사용자가 드래그한 위치 보존)
             lat: existingLot?.lat || lot.latitude || lot.lat || 37.4746,
             lng: existingLot?.lng || lot.longitude || lot.lng || 126.6499,
-            // API에서 받은 최신 상태 정보
-            status: lot.currentStatus?.statusText || existingLot?.status || '정보 없음',
+            // 여유율 기반으로 상태 재계산
+            status: status,
             available: lot.currentStatus?.emptySpaces ?? existingLot?.available ?? 0,
             total: lot.currentStatus?.totalSpaces || lot.totalSpaces || existingLot?.total || 0,
             emptySpaces: lot.currentStatus?.emptySpaces ?? existingLot?.emptySpaces ?? 0,
             occupiedSpaces: lot.currentStatus?.occupiedSpaces ?? existingLot?.occupiedSpaces ?? 0,
             totalSpaces: lot.currentStatus?.totalSpaces || lot.totalSpaces || existingLot?.totalSpaces || 0,
-            emptyRatio: lot.currentStatus?.emptyRatio?.toString() || existingLot?.emptyRatio || '0',
+            emptyRatio: emptyRatio,
             imageUrl: lot.currentStatus?.imageUrl || existingLot?.imageUrl || '',
             analysisTime: lot.currentStatus?.updatedAt || lot.currentStatus?.timestamp || existingLot?.analysisTime || '',
             // 기본 정보는 기존 데이터 우선
@@ -551,6 +565,7 @@ function App() {
       case '보통':
         return 'http://maps.google.com/mapfiles/ms/icons/yellow-dot.png';
       case '만차':
+      case '혼잡':
         return 'http://maps.google.com/mapfiles/ms/icons/red-dot.png';
       default:
         return 'http://maps.google.com/mapfiles/ms/icons/blue-dot.png';
@@ -565,6 +580,7 @@ function App() {
       case '보통':
         return '#fbbc04'; // 노란색
       case '만차':
+      case '혼잡':
         return '#ea4335'; // 빨간색
       default:
         return '#4285f4'; // 파란색
