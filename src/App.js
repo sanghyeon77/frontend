@@ -7,6 +7,8 @@ import './App.css';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
 
 const API_URL = process.env.REACT_APP_API_URL || '/api';
+console.log('Current API_URL:', API_URL); // 디버깅용 로그
+
 const GOOGLE_MAPS_API_KEY = process.env.REACT_APP_GOOGLE_MAPS_API_KEY;
 
 // 지도 기본 설정

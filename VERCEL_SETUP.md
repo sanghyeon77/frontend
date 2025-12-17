@@ -30,7 +30,19 @@ Vercel은 `.env` 파일을 보안상의 이유로 업로드하지 않습니다. 
 | `REACT_APP_FIREBASE_MESSAGING_SENDER_ID` | (Firebase 콘솔에서 복사한 messagingSenderId) |
 | `REACT_APP_FIREBASE_APP_ID` | (Firebase 콘솔에서 복사한 appId) |
 | `REACT_APP_GOOGLE_MAPS_API_KEY` | (사용 중인 Google Maps API Key) |
-| `REACT_APP_API_URL` | https://appealing-encouragement-production.up.railway.app/api |
+| `REACT_APP_API_URL` | /api |
+
+> **중요**: `REACT_APP_API_URL`을 `/api`로 설정해야 프록시(CORS 해결)가 정상 작동합니다. 기존에 전체 URL을 넣었다면 꼭 수정해주세요.
+
+## 5. 로컬 실행 시 주의사항 (localhost)
+
+로컬에서 `npm start`로 실행할 때도 `.env` 파일의 `REACT_APP_API_URL`이 `/api`로 되어 있어야 합니다.
+만약 `https://...` 전체 주소가 들어있으면 CORS 에러가 발생하여 이미지가 안 뜨거나 API 호출이 실패할 수 있습니다.
+
+1. 프로젝트 폴더의 `.env` 파일을 엽니다.
+2. `REACT_APP_API_URL=/api` 로 되어 있는지 확인합니다.
+3. 수정했다면 개발 서버를 껐다가 다시 켭니다 (`Ctrl+C` 후 `npm start`).
+
 
 5. 모든 변수를 추가한 후, **Deployments** 탭으로 가서 최신 배포를 **Redeploy** 하거나, 코드를 조금 수정해서 다시 푸시하여 **재배포**해야 적용됩니다. (재배포 필수!)
 
