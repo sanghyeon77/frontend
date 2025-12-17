@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HowParking QR Code</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center;
+            gap: 60px;
+            height: 100vh;
+            margin: 0;
+            padding: 20px 40px;
+            box-sizing: border-box;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            overflow: hidden;
+        }
+        .guide-container {
+            background: rgba(255,255,255,0.95);
+            padding: 35px 40px;
+            border-radius: 20px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+            max-width: 550px;
+            text-align: left;
+        }
+        .guide-title {
+            color: #333;
+            font-size: 28px;
+            font-weight: bold;
+            margin: 0 0 25px 0;
+            text-align: center;
+        }
+        .step {
+            margin-bottom: 20px;
+        }
+        .step-header {
+            color: #4285f4;
+            font-size: 20px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .step-header .number {
+            background: #4285f4;
+            color: white;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            font-weight: bold;
+        }
+        .step-item {
+            display: flex;
+            align-items: flex-start;
+            margin: 8px 0;
+            padding-left: 12px;
+        }
+        .step-item .emoji {
+            margin-right: 10px;
+            font-size: 20px;
+        }
+        .step-item .text {
+            color: #444;
+            font-size: 16px;
+            line-height: 1.5;
+        }
+        .step-item .text strong {
+            color: #4285f4;
+        }
+        .highlight-step {
+            background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
+            border-radius: 12px;
+            padding: 15px;
+            border-left: 5px solid #ff9800;
+        }
+        .highlight-step .step-header {
+            color: #e65100;
+        }
+        .highlight-step .step-header .number {
+            background: #ff9800;
+        }
+        .container {
+            background: white;
+            padding: 35px 45px;
+            border-radius: 20px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+            text-align: center;
+        }
+        h1 {
+            color: #333;
+            margin: 0 0 8px 0;
+            font-size: 36px;
+        }
+        .subtitle {
+            color: #666;
+            margin: 0 0 15px 0;
+            font-size: 16px;
+        }
+        #qrcode {
+            margin: 10px auto;
+            padding: 10px;
+            background: white;
+            border-radius: 10px;
+            display: inline-block;
+        }
+        .url {
+            margin-top: 15px;
+            padding: 12px;
+            background: #f5f5f5;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 13px;
+            color: #4285f4;
+            word-break: break-all;
+        }
+        .download-btn {
+            margin-top: 15px;
+            padding: 12px 30px;
+            background: #4285f4;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        .download-btn:hover {
+            background: #357ae8;
+        }
+        .info {
+            margin-top: 12px;
+            color: #666;
+            font-size: 13px;
+        }
+        @media (max-width: 900px) {
+            body {
+                flex-direction: column;
+                padding: 20px;
+                gap: 30px;
+            }
+            .guide-container {
+                max-width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- 왼쪽: 체험 가이드 -->
+    <div class="guide-container">
+        <h2 class="guide-title">🚗 실시간 주차 시스템 체험 가이드</h2>
+        
+        <div class="step">
+            <div class="step-header">
+                <span class="number">1</span>
+                접속 및 로그인
+            </div>
+            <div class="step-item">
+                <span class="emoji">📱</span>
+                <span class="text"><strong>QR 스캔:</strong> 휴대폰으로 QR 코드를 찍어 웹사이트에 접속해 주세요.</span>
+            </div>
+            <div class="step-item">
+                <span class="emoji">🔒</span>
+                <span class="text"><strong>로그인:</strong> 계정으로 로그인을 완료해 주세요.</span>
+            </div>
+        </div>
+        
+        <div class="step">
+            <div class="step-header">
+                <span class="number">2</span>
+                실시간 주차장 검색
+            </div>
+            <div class="step-item">
+                <span class="emoji">🔍</span>
+                <span class="text"><strong>검색:</strong> 상단 검색창에 <strong>"실시간"</strong>을 입력해 주세요.</span>
+            </div>
+            <div class="step-item">
+                <span class="emoji">👆</span>
+                <span class="text"><strong>선택:</strong> 검색 결과에 나온 주차장을 클릭하여 상세 화면으로 들어갑니다.</span>
+            </div>
+        </div>
+        
+        <div class="step highlight-step">
+            <div class="step-header">
+                <span class="number">3</span>
+                실시간 연동 체험 (하이라이트!)
+            </div>
+            <div class="step-item">
+                <span class="emoji">🚗</span>
+                <span class="text"><strong>차량 이동:</strong> 눈앞에 있는 미니 주차장의 차량을 다른 칸으로 옮겨보세요.</span>
+            </div>
+            <div class="step-item">
+                <span class="emoji">✅</span>
+                <span class="text"><strong>화면 확인:</strong> 웹사이트 화면에서 주차 상태가 즉시 변경되는 것을 확인하세요!</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- 오른쪽: QR 코드 -->
+    <div class="container">
+        <h1>🅿️ HowParking</h1>
+        <p class="subtitle">실시간 주차장 모니터링 시스템</p>
+        
+        <div id="qrcode"></div>
+        
+        <div class="url">
+            https://frontend-snowy-one-40.vercel.app
+        </div>
+        
+        <button class="download-btn" onclick="downloadQR()">
+            📥 QR 코드 다운로드
+        </button>
+        
+        <div class="info">
+            ⚡ QR 코드를 스캔하면 바로 웹사이트로 이동합니다
+        </div>
+    </div>
+
+    <!-- QRCode.js 라이브러리 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    
+    <script>
+        // QR 코드 생성
+        const qrcode = new QRCode(document.getElementById("qrcode"), {
+            text: "https://frontend-snowy-one-40.vercel.app",
+            width: 320,
+            height: 320,
+            colorDark: "#000000",
+            colorLight: "#ffffff",
+            correctLevel: QRCode.CorrectLevel.H
+        });
+
+        // QR 코드 다운로드 함수
+        function downloadQR() {
+            const canvas = document.querySelector('#qrcode canvas');
+            if (canvas) {
+                const url = canvas.toDataURL('image/png');
+                const link = document.createElement('a');
+                link.download = 'HowParking-QRCode.png';
+                link.href = url;
+                link.click();
+            }
+        }
+    </script>
+</body>
+</html>

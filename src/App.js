@@ -2,10 +2,11 @@ import React, { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import { GoogleMap, LoadScript, Marker, InfoWindow } from '@react-google-maps/api';
 import axios from 'axios';
 import { db } from './firebase';
-import { collection, addDoc, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
+import { collection, addDoc, query, where, orderBy, limit, getDocs, doc, setDoc, getDoc } from 'firebase/firestore';
 import './App.css';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line } from 'recharts';
 
-const API_URL = process.env.REACT_APP_API_URL || 'https://appealing-encouragement-production.up.railway.app/api';
+const API_URL = process.env.REACT_APP_API_URL || '/api';
 const GOOGLE_MAPS_API_KEY = process.env.REACT_APP_GOOGLE_MAPS_API_KEY;
 
 // 지도 기본 설정
@@ -25,10 +26,83 @@ const options = {
   streetViewControl: false,
   mapTypeControl: false,
   fullscreenControl: true,
+  gestureHandling: 'greedy', // 한 손가락으로 지도 이동 가능
+};
+
+// 🔧 Safari 호환 날짜 포맷팅 함수
+const formatDateTimeSafe = (date = new Date()) => {
+  const d = new Date(date);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hours = String(d.getHours()).padStart(2, '0');
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  const seconds = String(d.getSeconds()).padStart(2, '0');
+  
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+};
+
+const formatDateSafe = (date = new Date()) => {
+  const d = new Date(date);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  
+  return `${year}. ${month}. ${day}.`;
+};
+
+const formatTimeSafe = (date = new Date()) => {
+  const d = new Date(date);
+  const hours = String(d.getHours()).padStart(2, '0');
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  const seconds = String(d.getSeconds()).padStart(2, '0');
+  
+  return `${hours}:${minutes}:${seconds}`;
+};
+
+// 🔔 헤드업 알림 전송 함수 (화면 상단 배너 알림)
+const sendSystemNotification = async (title, body, tag = null) => {
+  try {
+    // 알림 권한 확인
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
+      console.log('❌ 알림 권한 없음');
+      return false;
+    }
+    
+    // Service Worker를 통한 헤드업 알림 (화면 상단에 배너로 표시)
+    if ('serviceWorker' in navigator) {
+      const registration = await navigator.serviceWorker.ready;
+      if (registration) {
+        await registration.showNotification(title, {
+          body: body,
+          icon: '/logo.png',
+          badge: '/logo.png',
+          vibrate: [300, 100, 300, 100, 300], // 강한 진동 → 헤드업 알림 트리거
+          tag: tag || 'howparking-' + Date.now(),
+          renotify: true, // 같은 태그여도 다시 알림
+          requireInteraction: false,
+          silent: false // 소리 ON
+        });
+        console.log('📱 헤드업 알림 표시됨:', title);
+        return true;
+      }
+    }
+    
+    // 폴백: 일반 Notification
+    new Notification(title, {
+      body: body,
+      icon: '/logo.png',
+      tag: tag || 'howparking-' + Date.now()
+    });
+    return true;
+  } catch (e) {
+    console.log('알림 전송 실패:', e);
+    return false;
+  }
 };
 
 // 검색 바 컴포넌트 (메모이제이션)
-const SearchBar = memo(({ searchQuery, onSearchChange, onRefresh, onToggleSidebar, showSidebar, isLoading }) => {
+const SearchBar = memo(({ searchQuery, onSearchChange }) => {
   return (
     <div className="search-bar">
       <input
@@ -38,12 +112,6 @@ const SearchBar = memo(({ searchQuery, onSearchChange, onRefresh, onToggleSideba
         onChange={(e) => onSearchChange(e.target.value)}
         className="search-input"
       />
-      <button onClick={onRefresh} className="refresh-button" disabled={isLoading} title="새로고침">
-        🔄
-      </button>
-      <button onClick={onToggleSidebar} className="edit-button" title={showSidebar ? '닫기' : '편집'}>
-        {showSidebar ? '✖️' : '✏️'}
-      </button>
     </div>
   );
 });
@@ -52,7 +120,7 @@ SearchBar.displayName = 'SearchBar';
 // Discord 봇 연동 주차장 데이터 (3개)
 // 초기 데이터 - Discord에서 실시간 업데이트됨
 const getDefaultParkingLots = () => {
-  const currentTime = new Date().toLocaleString('ko-KR');
+  const currentTime = formatDateTimeSafe();
   return [
     { 
       id: 1, 
@@ -141,6 +209,8 @@ function App() {
 
   const [parkingLots, setParkingLots] = useState(loadParkingLots);
   const [selectedParking, setSelectedParking] = useState(null);
+  const [mapCenter, setMapCenter] = useState(center); // 지도 중심 좌표
+  const [isFullScreenInfo, setIsFullScreenInfo] = useState(false); // 정보창 전체화면 상태
   const [searchQuery, setSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isMapLoaded, setIsMapLoaded] = useState(false);
@@ -162,7 +232,14 @@ function App() {
       return [];
     }
   });
-  const [notificationPermission, setNotificationPermission] = useState(Notification.permission);
+  const [notificationPermission, setNotificationPermission] = useState(() => {
+    // iOS Safari 호환성: Notification 객체 존재 여부 확인
+    try {
+      return typeof Notification !== 'undefined' ? Notification.permission : 'denied';
+    } catch (e) {
+      return 'denied';
+    }
+  });
   const [showLoginModal, setShowLoginModal] = useState(false);
   
   // 히스토리 및 알림 설정
@@ -188,6 +265,48 @@ function App() {
   });
   const [historySearchDate, setHistorySearchDate] = useState('');
   const [historySearchTime, setHistorySearchTime] = useState('');
+  
+  // 📊 통계 그래프 모달 상태
+  const [showStatsModal, setShowStatsModal] = useState(false);
+  const [selectedChartParking, setSelectedChartParking] = useState(null);
+  const [selectedHistoryImage, setSelectedHistoryImage] = useState(null); // 차트 점 클릭 시 해당 시간 이미지
+  
+  // 🔔 인앱 토스트 알림 (모바일 호환)
+  const [toastNotifications, setToastNotifications] = useState([]);
+  
+  // 📷 분석 상태 (분석완료/분석중)
+  const [analysisStatus, setAnalysisStatus] = useState({});
+  
+  // 🔧 Service Worker 등록
+  useEffect(() => {
+    const registerServiceWorker = async () => {
+      if ('serviceWorker' in navigator) {
+        try {
+          const registration = await navigator.serviceWorker.register('/sw.js');
+          console.log('✅ Service Worker 등록 성공:', registration.scope);
+          
+          // 알림 권한 확인
+          if (typeof Notification !== 'undefined') {
+            const permission = Notification.permission;
+            setNotificationPermission(permission);
+            console.log('🔔 알림 권한 상태:', permission);
+          }
+        } catch (error) {
+          console.log('❌ Service Worker 등록 실패:', error);
+        }
+      }
+    };
+    
+    registerServiceWorker();
+  }, []);
+
+  // Firebase 연결 상태 확인
+  useEffect(() => {
+    if (!db) {
+      setDbError(true);
+      console.warn('⚠️ Firebase DB 객체가 없습니다. 환경 변수 설정을 확인하세요.');
+    }
+  }, []);
 
   // 주차장 데이터가 변경될 때마다 localStorage에 자동 저장
   useEffect(() => {
@@ -206,12 +325,30 @@ function App() {
 
   // Firestore에서 히스토리 불러오기
   const loadHistoryFromFirestore = useCallback(async () => {
+    // 먼저 localStorage에서 로드 (빠른 표시)
     try {
+      const saved = localStorage.getItem(`parkingHistory_${username}`);
+      if (saved) {
+        const localData = JSON.parse(saved);
+        setParkingHistory(localData);
+        console.log('📦 localStorage에서 히스토리 로드:', localData.length, '개');
+      }
+    } catch (e) {
+      console.log('localStorage 로드 실패:', e);
+    }
+    
+    // Firestore에서 최신 데이터 로드
+    try {
+      if (!db) {
+        console.log('⚠️ Firestore 미연결');
+        return;
+      }
+      
       const historyRef = collection(db, 'parkingHistory');
+      // 복합 인덱스 문제 방지: orderBy 없이 쿼리 후 클라이언트에서 정렬
       const q = query(
         historyRef,
         where('username', '==', username),
-        orderBy('timestamp', 'desc'),
         limit(100)
       );
       
@@ -221,20 +358,21 @@ function App() {
         historyData.push({ id: doc.id, ...doc.data() });
       });
       
-      setParkingHistory(historyData);
-      console.log('✅ Firestore에서 히스토리 로드:', historyData.length, '개');
+      // 클라이언트에서 timestamp 기준 정렬
+      historyData.sort((a, b) => {
+        const timeA = new Date(a.timestamp).getTime();
+        const timeB = new Date(b.timestamp).getTime();
+        return timeB - timeA; // 최신순
+      });
+      
+      if (historyData.length > 0) {
+        setParkingHistory(historyData);
+        // localStorage에도 백업 저장
+        localStorage.setItem(`parkingHistory_${username}`, JSON.stringify(historyData));
+        console.log('✅ Firestore에서 히스토리 로드:', historyData.length, '개');
+      }
     } catch (error) {
       console.error('❌ Firestore 히스토리 로드 실패:', error);
-      // Firestore 연결 실패 시 localStorage 사용
-      try {
-        const saved = localStorage.getItem('parkingHistory');
-        if (saved) {
-          setParkingHistory(JSON.parse(saved));
-          console.log('📦 localStorage에서 히스토리 로드 (백업)');
-        }
-      } catch (e) {
-        console.error('localStorage 로드도 실패:', e);
-      }
     }
   }, [username]);
 
@@ -245,12 +383,23 @@ function App() {
     }
   }, [isLoggedIn, username, loadHistoryFromFirestore]);
 
+  // 🔍 디버그: Firebase 및 데이터 상태 확인
+  useEffect(() => {
+    console.log('=== 🔍 시스템 상태 진단 ===');
+    console.log('1️⃣ Firebase 연결:', db ? '✅ 연결됨' : '❌ 연결 안됨 (localStorage 사용 중)');
+    console.log('2️⃣ 로그인 상태:', isLoggedIn ? `✅ 로그인됨 (${username})` : '❌ 로그아웃 상태');
+    console.log('3️⃣ 히스토리 개수:', parkingHistory.length, '개');
+    console.log('4️⃣ localStorage 히스토리:', localStorage.getItem('parkingHistory') ? 'O' : 'X');
+    console.log('5️⃣ 백엔드 API URL:', API_URL);
+    console.log('========================');
+  }, [isLoggedIn, username, parkingHistory.length]);
+
   // 알림 시간대 저장
   useEffect(() => {
     localStorage.setItem('notificationTimeRanges', JSON.stringify(notificationTimeRanges));
   }, [notificationTimeRanges]);
 
-  // 히스토리에 추가 (Firestore)
+  // 히스토리에 추가 (Firestore + localStorage 백업) - 주차장당 20장 제한
   const addToHistory = async (parkingId, parkingName, imageUrl, status, data) => {
     if (!isLoggedIn || !username) return; // 로그인하지 않으면 저장 안함
     
@@ -262,9 +411,18 @@ function App() {
       data,
       username, // 사용자별로 저장
       timestamp: new Date().toISOString(),
-      date: new Date().toLocaleDateString('ko-KR'),
-      time: new Date().toLocaleTimeString('ko-KR')
+      date: formatDateSafe(),
+      time: formatTimeSafe()
     };
+    
+    // localStorage 백업 키 (사용자별)
+    const localStorageKey = `parkingHistory_${username}`;
+    
+    // 📷 분석 완료 상태로 변경 (2초 후 분석중으로)
+    setAnalysisStatus(prev => ({ ...prev, [parkingId]: '분석 완료 ✅' }));
+    setTimeout(() => {
+      setAnalysisStatus(prev => ({ ...prev, [parkingId]: '분석중...' }));
+    }, 2000);
     
     try {
       if (db) {
@@ -272,24 +430,70 @@ function App() {
         const docRef = await addDoc(collection(db, 'parkingHistory'), historyItem);
         console.log('✅ Firestore에 히스토리 저장:', docRef.id);
         
-        // 로컬 state 업데이트
-        setParkingHistory(prev => [{ id: docRef.id, ...historyItem }, ...prev].slice(0, 100));
+        // 로컬 state 업데이트 + localStorage 백업 (주차장당 20장 제한)
+        setParkingHistory(prev => {
+          const newItem = { id: docRef.id, ...historyItem };
+          const updated = [newItem, ...prev];
+          
+          // 주차장별로 그룹화하여 20장씩만 유지
+          const grouped = {};
+          updated.forEach(item => {
+            if (!grouped[item.parkingId]) grouped[item.parkingId] = [];
+            if (grouped[item.parkingId].length < 20) {
+              grouped[item.parkingId].push(item);
+            }
+          });
+          
+          // 다시 평탄화하고 시간순 정렬
+          const limited = Object.values(grouped).flat()
+            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+          
+          localStorage.setItem(localStorageKey, JSON.stringify(limited));
+          return limited;
+        });
       } else {
-        // Firestore 연결 실패 시 localStorage에 저장 (백업)
+        // Firestore 연결 실패 시 localStorage에만 저장
         console.log('⚠️ Firestore 미연결, localStorage 사용');
         setParkingHistory(prev => {
-          const updated = [{ id: Date.now(), ...historyItem }, ...prev].slice(0, 100);
-          localStorage.setItem('parkingHistory', JSON.stringify(updated));
-          return updated;
+          const newItem = { id: Date.now(), ...historyItem };
+          const updated = [newItem, ...prev];
+          
+          // 주차장별로 20장 제한
+          const grouped = {};
+          updated.forEach(item => {
+            if (!grouped[item.parkingId]) grouped[item.parkingId] = [];
+            if (grouped[item.parkingId].length < 20) {
+              grouped[item.parkingId].push(item);
+            }
+          });
+          
+          const limited = Object.values(grouped).flat()
+            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+          
+          localStorage.setItem(localStorageKey, JSON.stringify(limited));
+          return limited;
         });
       }
     } catch (error) {
       console.error('❌ 히스토리 저장 실패:', error);
       // 에러 시 localStorage 백업
       setParkingHistory(prev => {
-        const updated = [{ id: Date.now(), ...historyItem }, ...prev].slice(0, 100);
-        localStorage.setItem('parkingHistory', JSON.stringify(updated));
-        return updated;
+        const newItem = { id: Date.now(), ...historyItem };
+        const updated = [newItem, ...prev];
+        
+        const grouped = {};
+        updated.forEach(item => {
+          if (!grouped[item.parkingId]) grouped[item.parkingId] = [];
+          if (grouped[item.parkingId].length < 20) {
+            grouped[item.parkingId].push(item);
+          }
+        });
+        
+        const limited = Object.values(grouped).flat()
+          .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        
+        localStorage.setItem(localStorageKey, JSON.stringify(limited));
+        return limited;
       });
     }
   };
@@ -352,17 +556,23 @@ function App() {
     localStorage.setItem('isLoggedIn', 'true');
     setShowLoginModal(false);
     
-    // 알림 권한 요청
-    if (Notification.permission === 'default') {
-      Notification.requestPermission().then(permission => {
-        setNotificationPermission(permission);
-        if (permission === 'granted') {
-          new Notification('🅿️ HowParking', {
-            body: `${name}님, 환영합니다! 즐겨찾기 알림이 활성화되었습니다.`,
-            icon: '/logo.png'
-          });
-        }
-      });
+    // 알림 권한 요청 (iOS Safari 호환성 처리)
+    try {
+      if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+        Notification.requestPermission().then(permission => {
+          setNotificationPermission(permission);
+          if (permission === 'granted') {
+            // 시스템 알림 센터에 표시
+            sendSystemNotification(
+              '🅿️ HowParking',
+              `${name}님, 환영합니다! 즐겨찾기 알림이 활성화되었습니다.`,
+              'login-welcome'
+            );
+          }
+        }).catch(e => console.log('알림 권한 요청 실패:', e));
+      }
+    } catch (e) {
+      console.log('알림 기능을 지원하지 않는 브라우저입니다:', e);
     }
   };
 
@@ -387,13 +597,14 @@ function App() {
       if (prev.includes(parkingId)) {
         return prev.filter(id => id !== parkingId);
       } else {
-        // 즐겨찾기 추가 시 알림
+        // 즐겨찾기 추가 시 시스템 알림
         const parking = parkingLots.find(p => p.id === parkingId);
-        if (parking && notificationPermission === 'granted') {
-          new Notification('⭐ 즐겨찾기 추가', {
-            body: `${parking.name}이(가) 즐겨찾기에 추가되었습니다.`,
-            icon: '/logo.png'
-          });
+        if (parking && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+          sendSystemNotification(
+            '⭐ 즐겨찾기 추가',
+            `${parking.name}이(가) 즐겨찾기에 추가되었습니다.`,
+            `favorite-${parkingId}`
+          );
         }
         return [...prev, parkingId];
       }
@@ -460,16 +671,33 @@ function App() {
       if (!currentFavorites.includes(newLot.id)) return;
       
       const oldLot = currentLots.find(p => p.id === newLot.id);
-      if (!oldLot) return;
       
-      // 상태가 변경되었는지 확인
-      if (oldLot.status !== newLot.status) {
+      // 이미지가 새로 업로드되었을 때 알림
+      if (newLot.imageUrl && (!oldLot || oldLot.imageUrl !== newLot.imageUrl)) {
         const emoji = getStatusEmoji(newLot.status);
-        new Notification(`${emoji} ${newLot.name}`, {
-          body: `상태가 "${oldLot.status}"에서 "${newLot.status}"로 변경되었습니다.`,
-          icon: '/logo.png',
-          tag: `parking-${newLot.id}`
-        });
+        
+        // 📱 인앱 헤드업 알림 (하나만 표시 - 이전 알림 교체)
+        const toastId = Date.now() + newLot.id;
+        setToastNotifications([{  // 배열을 교체하여 하나만 표시
+          id: toastId,
+          title: newLot.name,
+          message: `${emoji} ${newLot.status}`,
+          time: new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
+        }]);
+        
+        // 5초 후 자동 제거
+        setTimeout(() => {
+          setToastNotifications(prev => prev.filter(t => t.id !== toastId));
+        }, 5000);
+        
+        // 🔔 시스템 알림 (웹사이트를 나가도 표시됨)
+        if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+          sendSystemNotification(
+            `${newLot.name}`,
+            `${emoji} ${newLot.status}`,
+            `parking-${newLot.id}`
+          );
+        }
       }
     });
   };
@@ -491,9 +719,12 @@ function App() {
         const stored = localStorage.getItem(STORAGE_KEY);
         const currentLots = stored ? JSON.parse(stored) : [];
         
-        // 백엔드 데이터를 프론트 형식으로 변환하되, 위치는 localStorage 데이터 우선
-        const formattedData = apiData.map(lot => {
+        // 백엔드 데이터를 프론트 형식으로 변환하되, Firebase 위치 우선 사용
+        const formattedData = await Promise.all(apiData.map(async (lot) => {
           const existingLot = currentLots.find(l => l.id === parseInt(lot.id));
+          
+          // ⭐ Firebase에서 저장된 위치 읽기
+          const firebasePosition = await loadMarkerPositionFromFirebase(parseInt(lot.id));
           
           // emptyRatio 계산
           const emptyRatio = lot.currentStatus?.emptyRatio?.toString() || existingLot?.emptyRatio || '0';
@@ -512,9 +743,9 @@ function App() {
           return {
             id: parseInt(lot.id),
             name: lot.name,
-            // ⭐ 기존 위치 우선 사용 (사용자가 드래그한 위치 보존)
-            lat: existingLot?.lat || lot.latitude || lot.lat || 37.4746,
-            lng: existingLot?.lng || lot.longitude || lot.lng || 126.6499,
+            // ⭐ Firebase 위치 우선 사용 (사용자가 변경한 위치 영구 저장)
+            lat: firebasePosition?.lat || lot.latitude || lot.lat || 37.4746,
+            lng: firebasePosition?.lng || lot.longitude || lot.lng || 126.6499,
             // 여유율 기반으로 상태 재계산
             status: status,
             available: lot.currentStatus?.emptySpaces ?? existingLot?.available ?? 0,
@@ -529,17 +760,26 @@ function App() {
             address: existingLot?.address || lot.address || '주소 정보 없음',
             fee: existingLot?.fee || '시간당 1,000원',
             openTime: existingLot?.openTime || '24시간',
-            lastUpdated: lot.lastUpdated || new Date().toLocaleString('ko-KR'),
+            lastUpdated: lot.lastUpdated || formatDateTimeSafe(),
             contact: existingLot?.contact || '032-123-4567'
           };
-        });
+        }));
         
-        console.log('🎨 변환된 데이터 (위치 보존):', formattedData);
+        console.log('🎨 변환된 데이터 (Firebase 위치 우선):', formattedData);
         
         // 상태 변경 감지 및 알림
         checkAndNotify(formattedData);
         
+        // 주차장 목록 갱신
         setParkingLots(formattedData);
+
+        // 전체화면/정보창에 선택된 주차장이 있다면, 항상 최신 데이터로 동기화
+        setSelectedParking((prev) => {
+          if (!prev) return prev;
+          const updated = formattedData.find((lot) => lot.id === prev.id);
+          if (!updated) return prev;
+          return { ...prev, ...updated };
+        });
       }
     } catch (error) {
       console.error('❌ 주차장 데이터 로드 실패:', error);
@@ -552,8 +792,8 @@ function App() {
 
   useEffect(() => {
     fetchParkingData();
-    // 5초마다 데이터 갱신 (빠른 업데이트)
-    const interval = setInterval(fetchParkingData, 5000);
+    // 1초마다 데이터 갱신 (실시간 업데이트)
+    const interval = setInterval(fetchParkingData, 1000);
     return () => clearInterval(interval);
   }, []); // 빈 배열로 초기 1회만 실행
 
@@ -595,8 +835,40 @@ function App() {
     setEditingParking(null);
   };
 
-  // 마커 드래그 이벤트 핸들러
-  const handleMarkerDrag = (id, newPosition) => {
+  // Firebase에서 마커 위치 읽기
+  const loadMarkerPositionFromFirebase = async (id) => {
+    try {
+      const docRef = doc(db, 'markerPositions', id.toString());
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        return docSnap.data();
+      }
+      return null;
+    } catch (error) {
+      console.error('❌ Firebase 위치 읽기 실패:', error);
+      return null;
+    }
+  };
+
+  // Firebase에 마커 위치 저장
+  const saveMarkerPositionToFirebase = async (id, lat, lng) => {
+    try {
+      const docRef = doc(db, 'markerPositions', id.toString());
+      await setDoc(docRef, {
+        lat: lat,
+        lng: lng,
+        updatedAt: new Date().toISOString()
+      });
+      console.log('🔥 Firebase에 위치를 저장했습니다.');
+      return true;
+    } catch (error) {
+      console.error('❌ Firebase 위치 저장 실패:', error);
+      return false;
+    }
+  };
+
+  // 마커 드래그 이벤트 핸들러 - Firebase에 위치 저장
+  const handleMarkerDrag = async (id, newPosition) => {
     const updatedLots = parkingLots.map(lot => {
       if (lot.id === id) {
         console.log(`🖱️ 마커 이동: ${lot.name}`);
@@ -606,6 +878,10 @@ function App() {
       }
       return lot;
     });
+    
+    // ⭐ Firebase에 위치 저장 (모든 디바이스에 공유)
+    await saveMarkerPositionToFirebase(id, newPosition.lat, newPosition.lng);
+    
     setParkingLots(updatedLots);
   };
 
@@ -617,7 +893,7 @@ function App() {
 
   const addNewParkingLot = () => {
     const newId = Math.max(...parkingLots.map(lot => lot.id), 0) + 1;
-    const currentTime = new Date().toLocaleString('ko-KR');
+    const currentTime = formatDateTimeSafe();
     const newLot = {
       id: newId,
       name: '새 주차장',
@@ -660,17 +936,88 @@ function App() {
     );
   }, [parkingLots, searchQuery]);
 
+  // 검색어 변경 시 해당 주차장을 지도 중앙에 표시
+  useEffect(() => {
+    if (!searchQuery) return;
+    const keyword = searchQuery.toLowerCase();
+    const found = parkingLots.find(lot =>
+      lot.name.toLowerCase().includes(keyword)
+    );
+    if (found) {
+      setMapCenter({ lat: found.lat, lng: found.lng });
+      setSelectedParking(found);
+    }
+  }, [searchQuery, parkingLots]);
+
   // 콜백 함수들 (메모이제이션)
   const handleSearchChange = useCallback((value) => {
     setSearchQuery(value);
   }, []);
 
-  const handleToggleSidebar = useCallback(() => {
-    setShowSidebar(prev => !prev);
-  }, []);
-
   return (
     <div className="App">
+      {/* 🔔 카카오톡 스타일 헤드업 알림 */}
+      {toastNotifications.length > 0 && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          zIndex: 99999,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '4px',
+          padding: '8px'
+        }}>
+          {toastNotifications.map(toast => (
+            <div
+              key={toast.id}
+              style={{
+                background: 'rgba(50, 50, 50, 0.95)',
+                color: 'white',
+                padding: '12px 16px',
+                borderRadius: '16px',
+                boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
+                animation: 'slideDown 0.3s ease-out',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px'
+              }}
+              onClick={() => setToastNotifications(prev => prev.filter(t => t.id !== toast.id))}
+            >
+              {/* 앱 아이콘 */}
+              <img 
+                src="/logo.png" 
+                alt="" 
+                style={{
+                  width: '36px',
+                  height: '36px',
+                  borderRadius: '8px',
+                  background: 'white',
+                  padding: '4px'
+                }}
+              />
+              {/* 알림 내용 */}
+              <div style={{flex: 1, minWidth: 0}}>
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: '2px'
+                }}>
+                  <span style={{fontWeight: '600', fontSize: '14px'}}>HowParking</span>
+                  <span style={{fontSize: '12px', opacity: 0.7}}>{toast.time || '지금'}</span>
+                </div>
+                <div style={{fontSize: '14px', fontWeight: '500'}}>
+                  {toast.title} {toast.message}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* 로고 헤더 */}
       <div className="header">
         <div style={{display: 'flex', alignItems: 'center', gap: '12px'}}>
@@ -679,6 +1026,22 @@ function App() {
         </div>
         {isLoggedIn ? (
           <div style={{display: 'flex', alignItems: 'center', gap: '8px'}}>
+            <button
+              onClick={() => setShowStatsModal(true)}
+              style={{
+                background: '#34a853',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                padding: '6px 12px',
+                fontSize: '12px',
+                cursor: 'pointer',
+                fontWeight: 'bold'
+              }}
+              title="주차장 통계"
+            >
+              📊
+            </button>
             <button
               onClick={() => setShowNotificationSettings(true)}
               style={{
@@ -737,11 +1100,212 @@ function App() {
       <SearchBar
         searchQuery={searchQuery}
         onSearchChange={handleSearchChange}
-        onRefresh={fetchParkingData}
-        onToggleSidebar={handleToggleSidebar}
-        showSidebar={showSidebar}
-        isLoading={isLoading}
       />
+
+      {/* 📊 통계 그래프 모달 */}
+      {showStatsModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0,0,0,0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 10000
+        }} onClick={() => setShowStatsModal(false)}>
+          <div style={{
+            background: 'white',
+            padding: '24px',
+            borderRadius: '12px',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
+            width: '90%',
+            maxWidth: '900px',
+            maxHeight: '85vh',
+            overflow: 'auto'
+          }} onClick={(e) => e.stopPropagation()}>
+            <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px'}}>
+              <h2 style={{margin: 0, fontSize: '20px'}}>📊 주차장 통계</h2>
+              <button
+                onClick={() => setShowStatsModal(false)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  fontSize: '24px',
+                  cursor: 'pointer',
+                  color: '#666'
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* 주차장별 여유율 비교 바 차트 */}
+            <div style={{marginBottom: '30px'}}>
+              <h3 style={{fontSize: '16px', marginBottom: '15px', color: '#333'}}>
+                🅿️ 주차장별 여유율 비교
+              </h3>
+              <ResponsiveContainer width="100%" height={250}>
+                <BarChart data={parkingLots.map(lot => ({
+                  name: lot.name,
+                  여유율: parseFloat(lot.emptyRatio) || 0,
+                  주차중: 100 - (parseFloat(lot.emptyRatio) || 0)
+                }))}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="name" tick={{fontSize: 12}} />
+                  <YAxis domain={[0, 100]} tick={{fontSize: 12}} />
+                  <Tooltip formatter={(value) => `${value.toFixed(1)}%`} />
+                  <Legend />
+                  <Bar dataKey="여유율" fill="#34a853" />
+                  <Bar dataKey="주차중" fill="#ea4335" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* 주차장 선택 드롭다운 (라인 차트용) */}
+            {parkingHistory.length > 0 && (
+              <div style={{marginTop: '20px', marginBottom: '10px'}}>
+                <label style={{fontWeight: 'bold', marginRight: '10px'}}>📈 시간대별 추이 보기:</label>
+                <select
+                  value={selectedChartParking?.id || ''}
+                  onChange={(e) => {
+                    const lot = parkingLots.find(l => l.id === parseInt(e.target.value));
+                    setSelectedChartParking(lot || null);
+                    setSelectedHistoryImage(null);
+                  }}
+                  style={{
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    border: '1px solid #ddd',
+                    fontSize: '14px'
+                  }}
+                >
+                  <option value="">주차장 선택</option>
+                  {parkingLots.map(lot => (
+                    <option key={lot.id} value={lot.id}>{lot.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* 히스토리 기반 라인 차트 (데이터가 있을 경우) */}
+            {parkingHistory.length > 0 && selectedChartParking && (() => {
+              // 📊 차트 데이터 미리 계산 (성능 최적화)
+              const filteredHistory = parkingHistory
+                .filter(h => h.parkingId === selectedChartParking.id)
+                .slice(0, 20)
+                .reverse();
+              
+              const chartData = filteredHistory.map((h, index) => ({
+                time: h.time?.substring(0, 5) || '',
+                여유율: parseFloat(h.data?.emptyRatio) || 0,
+                index: index // 원본 데이터 인덱스 저장
+              }));
+
+              return (
+                <div style={{marginTop: '30px'}}>
+                  <h3 style={{fontSize: '16px', marginBottom: '15px', color: '#333'}}>
+                    📈 {selectedChartParking.name} - 시간대별 여유율 변화
+                    <span style={{fontSize: '12px', color: '#666', marginLeft: '10px'}}>
+                      (점을 클릭하면 해당 시간 이미지 보기)
+                    </span>
+                  </h3>
+                  <ResponsiveContainer width="100%" height={200}>
+                    <LineChart data={chartData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis dataKey="time" tick={{fontSize: 10}} />
+                      <YAxis domain={[0, 100]} tick={{fontSize: 10}} />
+                      <Tooltip formatter={(value) => `${value.toFixed(1)}%`} />
+                      <Line 
+                        type="monotone" 
+                        dataKey="여유율" 
+                        stroke="#4285f4" 
+                        strokeWidth={2} 
+                        dot={{r: 4, cursor: 'pointer'}}
+                        activeDot={{
+                          r: 8,
+                          cursor: 'pointer',
+                          onClick: (e, payload) => {
+                            const clickedIndex = payload.index;
+                            const historyItem = filteredHistory[clickedIndex];
+                            if (historyItem) {
+                              setSelectedHistoryImage({
+                                imageUrl: historyItem.imageUrl,
+                                time: historyItem.time,
+                                date: historyItem.date,
+                                emptyRatio: historyItem.data?.emptyRatio,
+                                emptySpaces: historyItem.data?.emptySpaces,
+                                totalSpaces: historyItem.data?.totalSpaces
+                              });
+                            }
+                          }
+                        }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                  <p style={{fontSize: '12px', color: '#999', textAlign: 'center', marginTop: '8px'}}>
+                    최근 20개 기록 기준
+                  </p>
+
+                  {/* 선택된 시간의 이미지 표시 */}
+                  {selectedHistoryImage && (
+                    <div style={{
+                      marginTop: '20px',
+                      padding: '15px',
+                      background: '#f5f5f5',
+                      borderRadius: '8px',
+                      border: '2px solid #4285f4'
+                    }}>
+                      <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px'}}>
+                        <h4 style={{margin: 0, fontSize: '14px', color: '#333'}}>
+                          🕐 {selectedHistoryImage.date} {selectedHistoryImage.time} 상태
+                        </h4>
+                        <button
+                          onClick={() => setSelectedHistoryImage(null)}
+                          style={{
+                            background: '#ea4335',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            padding: '4px 8px',
+                            fontSize: '12px',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          닫기
+                        </button>
+                      </div>
+                      <div style={{display: 'flex', gap: '15px', flexWrap: 'wrap'}}>
+                        {selectedHistoryImage.imageUrl ? (
+                          <img 
+                            src={selectedHistoryImage.imageUrl} 
+                            alt="해당 시간 주차장"
+                            style={{
+                              maxWidth: '100%',
+                              maxHeight: '300px',
+                              borderRadius: '8px',
+                              objectFit: 'contain'
+                            }}
+                          />
+                        ) : (
+                          <p style={{color: '#999'}}>이미지가 없습니다.</p>
+                        )}
+                        <div style={{fontSize: '13px'}}>
+                          <p style={{margin: '5px 0'}}><strong>여유율:</strong> {selectedHistoryImage.emptyRatio || 0}%</p>
+                          <p style={{margin: '5px 0'}}><strong>빈 자리:</strong> {selectedHistoryImage.emptySpaces || 0}대</p>
+                          <p style={{margin: '5px 0'}}><strong>총 자리:</strong> {selectedHistoryImage.totalSpaces || 0}대</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
 
       {/* 로그인 모달 */}
       {showLoginModal && (
@@ -1236,23 +1800,25 @@ function App() {
       >
         <GoogleMap
           mapContainerStyle={mapContainerStyle}
-          center={center}
+          center={mapCenter}
           zoom={15}
           options={options}
+          onClick={() => {
+            // 지도 클릭 시 정보창 닫기
+            setSelectedParking(null);
+            setIsFullScreenInfo(false);
+          }}
         >
           {/* 주차장 마커 */}
           {isMapLoaded && filteredParkingLots.map((lot) => (
             <Marker
               key={lot.id}
               position={{ lat: lot.lat, lng: lot.lng }}
-              onClick={() => setSelectedParking(lot)}
-              draggable={true}
-              onDragEnd={(e) => {
-                handleMarkerDrag(lot.id, {
-                  lat: e.latLng.lat(),
-                  lng: e.latLng.lng()
-                });
+              onClick={() => {
+                setSelectedParking(lot);
+                setIsFullScreenInfo(false); // 전체화면 상태 초기화
               }}
+              draggable={false}
               icon={{
                 url: getMarkerColor(lot.status),
                 scaledSize: new window.google.maps.Size(40, 40),
@@ -1273,7 +1839,10 @@ function App() {
           {isMapLoaded && selectedParking && (
             <InfoWindow
               position={{ lat: selectedParking.lat, lng: selectedParking.lng }}
-              onCloseClick={() => setSelectedParking(null)}
+              onCloseClick={() => {
+                setSelectedParking(null);
+                setIsFullScreenInfo(false);
+              }}
             >
               <div className="info-window">
                 <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px'}}>
@@ -1435,6 +2004,27 @@ function App() {
                     </button>
                   )}
 
+                  {/* 전체화면 보기 버튼 */}
+                  {selectedParking.imageUrl && (
+                    <button
+                      onClick={() => setIsFullScreenInfo(true)}
+                      style={{
+                        width: '100%',
+                        marginTop: '8px',
+                        padding: '10px',
+                        background: '#4285f4',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontSize: '14px',
+                        fontWeight: 'bold'
+                      }}
+                    >
+                      🖥 전체화면
+                    </button>
+                  )}
+
                   {/* Discord 봇 데이터 - 분석 시간 */}
                   {(selectedParking.lastUpdated || selectedParking.analysisTime) && (
                     <p style={{margin: '12px 0 0 0', fontSize: '12px', color: '#999', borderTop: '1px solid #eee', paddingTop: '8px'}}>
@@ -1448,6 +2038,133 @@ function App() {
                 </div>
               </div>
             </InfoWindow>
+          )}
+
+          {/* 전체화면 정보 보기 오버레이 */}
+          {isFullScreenInfo && selectedParking && (
+            <div
+              style={{
+                position: 'fixed',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                background: 'rgba(0,0,0,0.8)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 20000
+              }}
+              onClick={() => setIsFullScreenInfo(false)}
+            >
+              <div
+                style={{
+                  background: 'white',
+                  borderRadius: '12px',
+                  maxWidth: '95vw',
+                  maxHeight: '90vh',
+                  padding: '16px',
+                  boxSizing: 'border-box',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'stretch',
+                  overflowY: 'auto'
+                }}
+              >
+                {selectedParking.imageUrl && (
+                  <div style={{marginBottom: '12px', borderRadius: '8px', overflow: 'hidden'}}>
+                    <img
+                      src={selectedParking.imageUrl}
+                      alt="주차장 현황 전체화면"
+                      style={{
+                        width: '100%',
+                        maxHeight: '60vh',
+                        objectFit: 'contain',
+                        display: 'block'
+                      }}
+                    />
+                  </div>
+                )}
+
+                {/* 상태 뱃지 */}
+                <div style={{marginBottom: '10px'}}>
+                  <span className={`status-badge ${selectedParking.status}`} style={{
+                    display: 'inline-block',
+                    padding: '6px 16px',
+                    borderRadius: '20px',
+                    fontSize: '14px',
+                    fontWeight: '600',
+                    color: 'white',
+                    background: selectedParking.status === '여유' ? '#34a853' : 
+                               selectedParking.status === '보통' ? '#fbbc04' : '#ea4335'
+                  }}>
+                    {selectedParking.status}
+                  </span>
+                </div>
+
+                {/* 주차 현황, 주차 중, 여유율 - 글씨 크기 확대 */}
+                <div style={{borderTop: '1px solid #eee', paddingTop: '16px'}}>
+                  <p style={{margin: '12px 0', fontSize: '18px', display: 'flex', alignItems: 'center'}}>
+                    <span style={{marginRight: '10px', fontSize: '22px'}}>🅿️</span>
+                    <strong>주차 현황:</strong>&nbsp;
+                    <span style={{color: '#4285f4', fontWeight: '700', fontSize: '20px'}}>
+                      {selectedParking.available || selectedParking.emptySpaces || 0}대 가능
+                    </span>
+                    <span style={{color: '#666', fontSize: '18px'}}>
+                      &nbsp;/ {selectedParking.total || selectedParking.totalSpaces || 0}대
+                    </span>
+                  </p>
+
+                  {selectedParking.occupiedSpaces !== undefined && (
+                    <p style={{margin: '12px 0', fontSize: '18px', display: 'flex', alignItems: 'center'}}>
+                      <span style={{marginRight: '10px', fontSize: '22px'}}>🚗</span>
+                      <strong>주차 중:</strong>&nbsp;
+                      <span style={{color: '#ea4335', fontWeight: '700', fontSize: '20px'}}>
+                        {selectedParking.occupiedSpaces}대
+                      </span>
+                    </p>
+                  )}
+
+                  {selectedParking.emptyRatio !== undefined && (
+                    <p style={{margin: '12px 0', fontSize: '18px', display: 'flex', alignItems: 'center'}}>
+                      <span style={{marginRight: '10px', fontSize: '22px'}}>📊</span>
+                      <strong>여유율:</strong>&nbsp;
+                      <span style={{
+                        color: parseFloat(selectedParking.emptyRatio) >= 30 ? '#34a853' :
+                               parseFloat(selectedParking.emptyRatio) >= 10 ? '#fbbc04' : '#ea4335',
+                        fontWeight: '700',
+                        fontSize: '20px'
+                      }}>
+                        {selectedParking.emptyRatio}%
+                      </span>
+                    </p>
+                  )}
+
+                  {(selectedParking.lastUpdated || selectedParking.analysisTime) && (
+                    <p style={{margin: '16px 0 0 0', fontSize: '15px', color: '#666', borderTop: '1px solid #eee', paddingTop: '12px'}}>
+                      <span style={{marginRight: '6px'}}>🔄</span>
+                      {selectedParking.analysisTime ? 
+                        `분석 시간: ${selectedParking.analysisTime}` :
+                        `마지막 업데이트: ${selectedParking.lastUpdated}`
+                      }
+                    </p>
+                  )}
+                </div>
+
+                <p style={{
+                  margin: '12px 0 0 0', 
+                  fontSize: '14px', 
+                  color: analysisStatus[selectedParking.id] === '분석 완료 ✅' ? '#34a853' : '#666', 
+                  textAlign: 'center',
+                  fontWeight: analysisStatus[selectedParking.id] === '분석 완료 ✅' ? '600' : '400'
+                }}>
+                  {analysisStatus[selectedParking.id] || '분석중...'}
+                  <span style={{display: 'block', fontSize: '11px', color: '#999', marginTop: '4px'}}>
+                    화면을 클릭하면 닫힙니다
+                  </span>
+                </p>
+              </div>
+            </div>
           )}
         </GoogleMap>
       </LoadScript>

@@ -6,6 +6,10 @@
   "trailingSlash": false,
   "rewrites": [
     {
+      "source": "/api/(.*)",
+      "destination": "https://appealing-encouragement-production.up.railway.app/api/$1"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
